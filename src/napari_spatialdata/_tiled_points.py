@@ -124,7 +124,9 @@ class TiledPointsLoader:
     # --- napari ---------------------------------------------------------------------------------------------------
     def update_layer(self, layer: Points, df: pd.DataFrame) -> None:
         size = layer.current_size
-        layer.data = df[self.layer_axes].to_numpy()
+        # not a user edit: do not let the edit caches of napari-spatialdata record it
+        with layer.events.data.blocker():
+            layer.data = df[self.layer_axes].to_numpy()
         layer.size = size
         layer.metadata["_n_indices"] = len(df)
         layer.metadata["indices"] = df.index.to_list()
@@ -174,3 +176,132 @@ class TiledPointsLoader:
         """Show only these features (None: all) and reload."""
         self.features = features
         self.refresh()
+
+
+# --- shapes (RFC 4) -----------------------------------------------------------------------------------------------
+def get_shapes_spatial_index(sdata: SpatialData, name: str) -> Any:
+    """The spatial index (RFC 4) of a shapes element of a disk-backed SpatialData object, if it has one."""
+    if sdata.path is None:
+        return None
+    path = Path(sdata.path) / "shapes" / name
+    if not (path / "zarr.json").exists():
+        return None
+    try:
+        import zarr
+        from spatialdata._io.spatial_index import ShapesSpatialIndex
+    except ImportError:
+        return None
+    attrs = zarr.open_group(path, mode="r").attrs.asdict()
+    if "spatial_index" not in attrs:
+        return None
+    table = attrs["spatial_index"].get("spatialdata_extra", {}).get("table", {}).get("name")
+    return ShapesSpatialIndex(path, Path(sdata.path) / "tables" / table if table else None)
+
+
+def _polygons_yx(gdf: Any) -> list[np.ndarray]:
+    """Exterior of each shape (the largest part of a multipolygon), as (y, x) vertices."""
+    out = []
+    for g in gdf.geometry:
+        if g.geom_type == "MultiPolygon":
+            g = max(g.geoms, key=lambda p: p.area)
+        xy = np.asarray(g.exterior.coords)[:-1]
+        out.append(xy[:, ::-1])
+    return out
+
+
+class TiledShapesLoader:
+    """Keep a napari Shapes layer filled with the shapes in view, read through the spatial index (RFC 4).
+
+    RFC 4 has no levels: when more than ``max_shapes`` are in view the layer is emptied (zoom in to see them; the
+    centroids can be shown as indexed points instead).
+    """
+
+    def __init__(self, index: Any, max_shapes: int) -> None:
+        self.index = index
+        self.max_shapes = max_shapes
+        self.gene: str | None = None
+        self.last_query: dict[str, Any] = {}
+        self._viewer: Viewer | None = None
+        self._layer: Any = None
+        self._timer: Any = None
+
+    def load(self, lo: np.ndarray | None = None, hi: np.ndarray | None = None) -> Any:
+        """Shapes in the box [lo, hi] (layer order (y, x); None: everything), or None if there are too many."""
+        import geopandas as gpd
+
+        if lo is None or hi is None:
+            lv = self.index.metadata.levels[0]
+            o = np.asarray(lv.origin)
+            bmin, bmax = o, o + np.asarray(lv.tile_size) * np.asarray(lv.grid_shape)
+        else:
+            bmin, bmax = np.asarray(lo)[::-1], np.asarray(hi)[::-1]
+        n = self.index.count(bmin, bmax)
+        self.last_query = {"n_in_view": n, "box": (lo, hi), "loaded": n <= self.max_shapes}
+        if n > self.max_shapes:
+            return gpd.GeoDataFrame(geometry=[])
+        return self.index.query(bmin, bmax)
+
+    def update_layer(self, layer: Any, gdf: Any) -> None:
+        # not a user edit: do not let the edit caches of napari-spatialdata record it
+        with layer.events.data.blocker():
+            layer.data = []
+            if len(gdf):
+                layer.add_polygons(_polygons_yx(gdf))
+        rows = gdf["__row__"].to_numpy() if len(gdf) else np.empty(0, dtype=np.int64)
+        layer.metadata["_n_indices"] = len(gdf)
+        layer.metadata["indices"] = list(gdf.index) if len(gdf) else []
+        layer.metadata["_tiled_rows"] = rows
+        layer.metadata["_tiled_last_query"] = dict(self.last_query)
+        if self.gene is not None and len(rows):
+            self._color(layer, rows)
+
+    def _color(self, layer: Any, rows: np.ndarray) -> None:
+        from napari.utils.colormaps import ensure_colormap
+
+        v = self.index.gene_values(self.gene, rows).astype(np.float64)
+        vmax = float(v.max()) if len(v) and v.max() > 0 else 1.0
+        layer.face_color = ensure_colormap("viridis").map(v / vmax)
+
+    def color_by_gene(self, gene: str | None) -> None:
+        """Color the shapes in view by the expression of a gene, read from the CSC layer of the table."""
+        self.gene = gene
+        if self._layer is not None:
+            rows = self._layer.metadata.get("_tiled_rows", np.empty(0, dtype=np.int64))
+            if gene is not None and len(rows):
+                self._color(self._layer, rows)
+
+    def refresh(self) -> None:
+        if self._viewer is None or self._layer is None:
+            return
+        lo, hi = view_box_in_data(self._viewer, self._layer)
+        try:
+            gdf = self.load(lo, hi)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Loading tiled shapes failed: {e}")
+            return
+        self.update_layer(self._layer, gdf)
+
+    def connect(self, viewer: Viewer, layer: Any, delay_ms: int = 150) -> None:
+        from qtpy.QtCore import QTimer
+
+        self._viewer = viewer
+        self._layer = layer
+        self._timer = QTimer()
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(delay_ms)
+        self._timer.timeout.connect(self.refresh)
+
+        def schedule(*_: Any) -> None:
+            if self._layer is not None and self._layer in viewer.layers and self._layer.visible:
+                self._timer.start()
+
+        viewer.camera.events.center.connect(schedule)
+        viewer.camera.events.zoom.connect(schedule)
+        self._schedule = schedule
+
+    def disconnect(self) -> None:
+        if self._viewer is not None:
+            self._viewer.camera.events.center.disconnect(self._schedule)
+            self._viewer.camera.events.zoom.disconnect(self._schedule)
+        self._viewer = None
+        self._layer = None

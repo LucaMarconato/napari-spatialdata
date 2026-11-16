@@ -87,3 +87,56 @@ def test_tiled_points_layer_follows_camera(qtbot, make_napari_viewer, sdata_tile
     # select a feature
     loader.set_features(["rare"])
     assert set(layer.metadata["_columns_df"]["gene"]) <= {"rare"}
+
+
+@pytest.fixture
+def sdata_tiled_cells(tmp_path) -> SpatialData:
+    import geopandas as gpd
+    import shapely
+    from anndata import AnnData
+    from scipy import sparse
+    from spatialdata import build_shapes_spatial_index
+    from spatialdata.models import ShapesModel, TableModel
+
+    rng = np.random.default_rng(0)
+    n = 3_000
+    c = rng.uniform(0, 1000, size=(n, 2))
+    polys = [shapely.Point(x, y).buffer(3, quad_segs=2) for x, y in c]
+    ids = np.arange(n)
+    shapes = ShapesModel.parse(gpd.GeoDataFrame(geometry=polys, index=pd.Index(ids, name="cell_id")))
+    X = sparse.random(n, 5, density=0.5, format="csr", random_state=0, dtype=np.float32)
+    obs = pd.DataFrame({"cell_id": ids, "region": pd.Categorical(["cells"] * n)})
+    table = TableModel.parse(
+        AnnData(X=X, obs=obs, var=pd.DataFrame(index=[f"g{i}" for i in range(5)])),
+        region="cells",
+        region_key="region",
+        instance_key="cell_id",
+    )
+    path = tmp_path / "cells.zarr"
+    SpatialData(shapes={"cells": shapes}, tables={"table": table}).write(path)
+    sdata = read_zarr(path)
+    build_shapes_spatial_index(sdata, "cells", table_name="table", target_shapes_per_tile=100)
+    return read_zarr(path)
+
+
+def test_tiled_shapes_layer(qtbot, make_napari_viewer, sdata_tiled_cells, monkeypatch):
+    from napari_spatialdata._tiled_points import TiledShapesLoader
+
+    monkeypatch.setattr(config, "TILED_SHAPES_MAX", 500)
+    viewer = make_napari_viewer()
+    widget = SdataWidget(viewer, EventedList([sdata_tiled_cells]))
+    center_pos = get_center_pos_listitem(widget.coordinate_system_widget, "global")
+    click_list_widget_item(qtbot, widget.coordinate_system_widget, center_pos, "currentItemChanged")
+    widget._onClick("cells")
+    layer = viewer.layers["cells"]
+    loader = layer.metadata["_tiled_loader"]
+    assert isinstance(loader, TiledShapesLoader)
+    # zoomed out: too many shapes in view, nothing loaded
+    assert len(layer.data) == 0
+    assert not layer.metadata["_tiled_last_query"]["loaded"]
+    viewer.camera.center = (500.0, 500.0)
+    viewer.camera.zoom = 10.0
+    qtbot.waitUntil(lambda: layer.metadata["_tiled_last_query"]["loaded"], timeout=5_000)
+    assert 0 < len(layer.data) <= 500
+    loader.color_by_gene("g1")
+    assert layer.face_color.shape == (len(layer.data), 4)

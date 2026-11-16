@@ -22,7 +22,12 @@ from spatialdata.models import PointsModel, ShapesModel, TableModel, force_2d, g
 from spatialdata.transformations import Affine, Identity
 
 from napari_spatialdata._model import DataModel
-from napari_spatialdata._tiled_points import TiledPointsLoader, get_points_spatial_index
+from napari_spatialdata._tiled_points import (
+    TiledPointsLoader,
+    TiledShapesLoader,
+    get_points_spatial_index,
+    get_shapes_spatial_index,
+)
 from napari_spatialdata.constants import config
 from napari_spatialdata.utils._utils import (
     _adjust_channels_order,
@@ -616,6 +621,9 @@ class SpatialDataViewer(QObject):
         df = sdata.shapes[original_name]
         include_z = not config.PROJECT_2_5D_SHAPES_TO_2D
         affine = _get_transform(sdata.shapes[original_name], selected_cs, include_z=include_z)
+        shapes_index = get_shapes_spatial_index(sdata, original_name)
+        if shapes_index is not None and not include_z:
+            return self._get_tiled_sdata_shapes(sdata, key, original_name, selected_cs, shapes_index, affine)
 
         # when mulitpolygons are present, we select the largest ones
         if "MultiPolygon" in np.unique(df.geometry.type):
@@ -819,6 +827,35 @@ class SpatialDataViewer(QObject):
             **kwargs,
         )
         loader.update_layer(layer, df)
+        return layer
+
+    def _get_tiled_sdata_shapes(
+        self, sdata: SpatialData, key: str, original_name: str, selected_cs: str, index: Any, affine: Any
+    ) -> Shapes:
+        """A shapes layer that loads only the shapes in view, through the spatial index of the element (RFC 4)."""
+        adata, table_name, table_names = self._get_table_data(sdata, original_name)
+        loader = TiledShapesLoader(index, max_shapes=config.TILED_SHAPES_MAX)
+        gdf = loader.load()
+        layer = Shapes(
+            [],
+            name=key,
+            affine=affine,
+            shape_type="polygon",
+            face_color="#00000000",
+            metadata={
+                "sdata": sdata,
+                "adata": adata,
+                "region_key": sdata[table_name].uns["spatialdata_attrs"]["region_key"] if table_name else None,
+                "instance_key": sdata[table_name].uns["spatialdata_attrs"]["instance_key"] if table_name else None,
+                "table_names": table_names if table_name else None,
+                "name": original_name,
+                "_active_in_cs": {selected_cs},
+                "_current_cs": selected_cs,
+                "_columns_df": None,
+                "_tiled_loader": loader,
+            },
+        )
+        loader.update_layer(layer, gdf)
         return layer
 
     def _adjust_radii_of_points_layer(self, layer: Layer, affine: npt.ArrayLike) -> None:

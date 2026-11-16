@@ -6,3 +6,5 @@ POINT_SIZE_SCATTERPLOT_WIDGET = 6
 CIRCLES_AS_POINTS = True
 PROJECT_3D_POINTS_TO_2D = True
 PROJECT_2_5D_SHAPES_TO_2D = True
+# shapes with a spatial index (RFC 4): above this number of shapes in view the layer is left empty
+TILED_SHAPES_MAX = 5000
