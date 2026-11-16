@@ -22,6 +22,7 @@ from spatialdata.models import PointsModel, ShapesModel, TableModel, force_2d, g
 from spatialdata.transformations import Affine, Identity
 
 from napari_spatialdata._model import DataModel
+from napari_spatialdata._tiled_points import TiledPointsLoader, get_points_spatial_index
 from napari_spatialdata.constants import config
 from napari_spatialdata.utils._utils import (
     _adjust_channels_order,
@@ -73,6 +74,11 @@ class SpatialDataViewer(QObject):
 
     def _on_layer_insert(self, event: Event) -> None:
         layer = event.value
+        loader = layer.metadata.get("_tiled_loader") if hasattr(layer, "metadata") else None
+        if loader is not None and loader._layer is None:
+            # points with a spatial index (RFC 3): reload the points in view when the camera moves
+            loader.connect(self.viewer, layer)
+        layer = event.value
         if layer.metadata.get("sdata"):
             self.layer_names.add(layer.name)
             self._layer_event_caches[layer.name] = []
@@ -84,6 +90,9 @@ class SpatialDataViewer(QObject):
 
     def _on_layer_removed(self, event: Event) -> None:
         layer = event.value
+        loader = layer.metadata.get("_tiled_loader") if hasattr(layer, "metadata") else None
+        if loader is not None:
+            loader.disconnect()
         if layer.metadata.get("name"):
             del self._layer_event_caches[layer.name]
             self.layer_names.remove(layer.name)
@@ -716,8 +725,11 @@ class SpatialDataViewer(QObject):
             original_name = original_name[: original_name.rfind("_")]
 
         axes = get_axes_names(sdata.points[original_name])
-        points = sdata.points[original_name].compute()
         include_z = "z" in axes and not config.PROJECT_3D_POINTS_TO_2D
+        index = get_points_spatial_index(sdata, original_name)
+        if index is not None and not include_z:
+            return self._get_tiled_sdata_points(sdata, key, original_name, selected_cs, index)
+        points = sdata.points[original_name].compute()
         affine = _get_transform(sdata.points[original_name], selected_cs, include_z=include_z)
         adata, table_name, table_names = self._get_table_data(sdata, original_name)
 
@@ -772,6 +784,41 @@ class SpatialDataViewer(QObject):
         )
         assert affine is not None
         self._adjust_radii_of_points_layer(layer=layer, affine=affine)
+        return layer
+
+    def _get_tiled_sdata_points(
+        self, sdata: SpatialData, key: str, original_name: str, selected_cs: str, index: Any
+    ) -> Points:
+        """A points layer that loads only the points in view, through the spatial index of the element (RFC 3)."""
+        element = sdata.points[original_name]
+        affine = _get_transform(element, selected_cs, include_z=False)
+        adata, table_name, table_names = self._get_table_data(sdata, original_name)
+        feature_key = element.attrs.get("spatialdata_attrs", {}).get("feature_key")
+        loader = TiledPointsLoader(
+            index, layer_axes=["y", "x"], max_points=config.POINT_THRESHOLD, feature_key=feature_key
+        )
+        df = loader.load()  # whole extent, sampled down to the budget
+        version = get_napari_version()
+        kwargs = {"edge_width": 0.0} if version <= packaging.version.parse("0.4.20") else {"border_width": 0.0}
+        layer = Points(
+            df[["y", "x"]].to_numpy(),
+            name=key,
+            size=3 * 2,
+            affine=affine,
+            metadata={
+                "sdata": sdata,
+                "adata": adata,
+                "name": original_name,
+                "region_key": sdata[table_name].uns["spatialdata_attrs"]["region_key"] if table_name else None,
+                "instance_key": sdata[table_name].uns["spatialdata_attrs"]["instance_key"] if table_name else None,
+                "table_names": table_names if table_name else None,
+                "_active_in_cs": {selected_cs},
+                "_current_cs": selected_cs,
+                "_tiled_loader": loader,
+            },
+            **kwargs,
+        )
+        loader.update_layer(layer, df)
         return layer
 
     def _adjust_radii_of_points_layer(self, layer: Layer, affine: npt.ArrayLike) -> None:
