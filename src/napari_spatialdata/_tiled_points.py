@@ -102,6 +102,9 @@ class TiledPointsLoader:
             codes = [lut[f] for f in self.features if f in lut]
             s, e = self.index.feature_ranges(self.feature_key, codes, bmin, bmax, 0)
         else:
+            if hasattr(self.index, "estimate_count"):
+                # the points expected inside the view (the tiles of the coarse bands are larger than the view)
+                return int(round(self.index.estimate_count(bmin, bmax, 0)))
             s, e = self.index.tile_ranges(bmin, bmax, 0)
         return int(np.sum(e - s))
 
