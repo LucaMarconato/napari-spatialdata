@@ -323,7 +323,10 @@ def get_elements_meta_mapping(
     elements = {}
     name_to_add = None
     for index, sdata in enumerate(sdatas):
-        for element_type, element_name, _ in sdata.filter_by_coordinate_system(coordinate_system_name)._gen_elements():
+        # filter_tables=False: listing the elements does not need the tables filtered, and filtering them joins and
+        # copies every table annotating the elements (with all its layers): seconds for a large table
+        filtered = sdata.filter_by_coordinate_system(coordinate_system_name, filter_tables=False)
+        for element_type, element_name, _ in filtered._gen_elements():
             elements_metadata = {
                 "element_type": element_type,
                 "sdata_index": index,

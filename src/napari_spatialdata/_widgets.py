@@ -154,6 +154,23 @@ class AListWidget(ListWidget):
 
                     properties = self._get_points_properties(vec, key=item, layer=self.model.layer)
                     self.model.color_by = "" if self.model.system_name is None else item
+                    if "_tiled_loader" in self.model.layer.metadata:
+                        # a layer loaded by view (spatial index): color the points loaded later in the same way. A
+                        # column of the points is colored by the loader itself (it does not depend on which layer is
+                        # selected); other colorings are computed again through this widget.
+                        meta = self.model.layer.metadata
+                        if self._attr == "columns_df" and isinstance(self.model.layer, Points):
+                            from napari_spatialdata._tiled_points import color_points
+
+                            meta["_tiled_color_by"] = item
+                            meta["_tiled_cmap"] = self.model.cmap
+                            meta.pop("_tiled_recolor", None)
+                            df = meta["_columns_df"]
+                            self.model.layer.face_color = color_points(df[item], self.model.cmap)
+                            self.model.layer.text = None
+                            continue
+                        meta.pop("_tiled_color_by", None)
+                        meta["_tiled_recolor"] = self._tiled_recolor(item, self.model.layer)
                     if isinstance(self.model.layer, Points | Shapes):
                         self.model.layer.text = None  # needed because of the text-feature order of updates
                         self.model.layer.face_color = properties["face_color"]
@@ -174,6 +191,13 @@ class AListWidget(ListWidget):
                     #  done
                     # TODO(giovp): make layer editable?
                     # self.viewer.layers[layer_name].editable = False
+
+    def _tiled_recolor(self, item: str, layer: Any) -> Callable[[], None]:
+        def recolor() -> None:
+            if self.model.layer is layer:
+                self._onAction([item])
+
+        return recolor
 
     def setAdataLayer(self, layer: str | None) -> None:
         if layer in ("default", "None", "X"):
