@@ -198,3 +198,33 @@ def test_tiled_points_colors_follow_reloads(qtbot, make_napari_viewer, sdata_til
     viewer.camera.zoom = 20.0
     qtbot.waitUntil(lambda: layer.metadata["_tiled_last_query"]["budget"] == 1.0, timeout=5_000)
     qtbot.waitUntil(colors_match, timeout=5_000)
+
+
+def test_tiled_points_zoom_in_out_keeps_colors(qtbot, make_napari_viewer, sdata_tiled, monkeypatch):
+    """Zooming in and out many times with a coloring: no errors, and the points stay colored by the column."""
+    from napari_spatialdata._view import QtAdataViewWidget
+
+    monkeypatch.setattr(config, "POINT_THRESHOLD", 5_000)
+    viewer = make_napari_viewer()
+    widget = SdataWidget(viewer, EventedList([sdata_tiled]))
+    viewer.window.add_dock_widget(widget, name="SpatialData")
+    view_widget = QtAdataViewWidget(viewer)
+    center_pos = get_center_pos_listitem(widget.coordinate_system_widget, "global")
+    click_list_widget_item(qtbot, widget.coordinate_system_widget, center_pos, "currentItemChanged")
+    widget._onClick("transcripts")
+    layer = viewer.layers["transcripts"]
+    viewer.layers.selection.active = layer
+    view_widget._select_layer()
+    viewer.camera.center = (150.0, 150.0)
+    viewer.camera.zoom = 20.0
+    qtbot.waitUntil(lambda: layer.metadata["_tiled_last_query"]["budget"] == 1.0, timeout=5_000)
+    view_widget.dataframe_columns_widget._onAction(["gene"])
+    white = np.array([1.0, 1.0, 1.0, 1.0])
+    for zoom in [0.3, 20.0, 0.5, 5.0, 0.3, 30.0, 0.3] * 3:
+        viewer.camera.zoom = zoom
+        qtbot.wait(40)
+    qtbot.wait(800)
+    fc = np.asarray(layer.face_color)
+    assert len(fc) == len(layer.data)
+    assert not np.all(np.isclose(fc, white).all(axis=1))  # not all white
+    layer.refresh()  # slicing the layer works (no IndexError)

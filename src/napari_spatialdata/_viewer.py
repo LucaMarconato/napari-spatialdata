@@ -132,6 +132,8 @@ class SpatialDataViewer(QObject):
         self.layer_names.add(layer.name)
 
     def _update_cache_indices(self, event: Event) -> None:
+        if event.source.metadata.get("_tiled_updating"):
+            return  # a reload of a layer loaded by view (spatial index), not a user edit
         del event.value
         # This needs to be changed when we switch to napari 0.4.19
         if event.action == "remove" or (type(event.source) is not Points and event.action == "change"):

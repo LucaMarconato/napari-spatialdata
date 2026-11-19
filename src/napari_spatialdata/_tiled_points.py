@@ -142,15 +142,32 @@ class TiledPointsLoader:
             feature_key=self.feature_key,
             columns=self.columns,
         )
+        # the feature column with the global category list, the same at every reload: Parquet row groups carry only
+        # the categories they use, so without this the categories (and the colors derived from their order) would
+        # change with the view
+        fk = self.feature_key
+        if fk is not None and fk in df.columns and fk in self.index.metadata.feature_keys:
+            df[fk] = pd.Categorical(df[fk].astype(str), categories=self._global_categories())
         self.last_query = {"n_in_view": n, "budget": budget, "n_loaded": len(df), "box": (lo, hi)}
         return df
+
+    def _global_categories(self) -> list[str]:
+        if not hasattr(self, "_cats"):
+            assert self.feature_key is not None
+            self._cats = self.index.categories(self.feature_key)
+        return self._cats
 
     # --- napari ---------------------------------------------------------------------------------------------------
     def update_layer(self, layer: Points, df: pd.DataFrame) -> None:
         size = layer.current_size
         # not a user edit: do not let the edit caches of napari-spatialdata record it
-        with layer.events.data.blocker():
+        # not a user edit: the edit caches of napari-spatialdata skip it (blocking the data event would also hide
+        # the change from napari's own views, which then slice stale arrays: IndexError)
+        layer.metadata["_tiled_updating"] = True
+        try:
             layer.data = df[self.layer_axes].to_numpy()
+        finally:
+            layer.metadata["_tiled_updating"] = False
         layer.size = size
         layer.metadata["_n_indices"] = len(df)
         layer.metadata["indices"] = df.index.to_list()
@@ -165,7 +182,7 @@ class TiledPointsLoader:
                 recolor()
                 return
             except Exception as e:  # noqa: BLE001 - keep the viewer alive
-                logger.error(f"Coloring the tiled points failed: {e}")
+                logger.exception(f"Coloring the tiled points failed: {e}")
         if len(df):
             layer.face_color = layer.current_face_color
 
@@ -319,10 +336,13 @@ class TiledShapesLoader:
     def update_layer(self, layer: Any, gdf: Any) -> None:
         # not a user edit: do not let the edit caches of napari-spatialdata record it
         polygons, owner = _polygons_yx(gdf) if len(gdf) else ([], np.empty(0, dtype=np.int64))
-        with layer.events.data.blocker():
+        layer.metadata["_tiled_updating"] = True
+        try:
             layer.data = []
             if polygons:
                 layer.add_polygons(polygons)
+        finally:
+            layer.metadata["_tiled_updating"] = False
         # one napari polygon per part; each part carries the index and the row of its shape
         rows = gdf["__row__"].to_numpy()[owner] if len(gdf) else np.empty(0, dtype=np.int64)
         layer.metadata["_n_indices"] = len(polygons)
