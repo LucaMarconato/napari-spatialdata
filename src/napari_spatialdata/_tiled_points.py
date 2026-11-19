@@ -86,6 +86,21 @@ class TiledPointsLoader:
         self._viewer: Viewer | None = None
         self._layer: Points | None = None
 
+    def point_size(self) -> float:
+        """About the mean spacing of the points of a typical non-empty tile of level 0, in data units."""
+        lv0 = self.index.metadata.levels[0]
+        axes = [i for i, a in enumerate(self.index.metadata.axes) if a in self.layer_axes]
+        tile_area = float(np.prod([lv0.tile_size[i] for i in axes]))
+        try:
+            o = self.index._offsets(None, 0)[:]
+            counts = np.diff(o.astype(np.int64))
+            # band 0 holds 1 - P(1) of the points of each tile
+            frac = 1.0 - (self.index.metadata.levels[1].P if self.index.metadata.n_levels > 1 else 0.0)
+            median = float(np.median(counts[counts > 0])) / max(frac, 1e-9)
+        except Exception:  # noqa: BLE001
+            median = self.index.n_rows / max(lv0.n_tiles, 1)
+        return float(np.sqrt(tile_area / max(median, 1.0)))
+
     # --- data -----------------------------------------------------------------------------------------------------
     def _index_box(self, lo: np.ndarray | None, hi: np.ndarray | None) -> tuple[Any, Any]:
         if lo is None or hi is None:

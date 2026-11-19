@@ -808,7 +808,10 @@ class SpatialDataViewer(QObject):
         layer = Points(
             df[["y", "x"]].to_numpy(),
             name=key,
-            size=3 * 2,
+            # about the mean spacing of the points at full resolution (in data units), so that zoomed in the
+            # points do not overlap; drawn at least 2 and at most 8 screen pixels wide
+            size=loader.point_size(),
+            canvas_size_limits=(2, 8),
             affine=affine,
             metadata={
                 "sdata": sdata,
