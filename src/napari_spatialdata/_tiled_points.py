@@ -59,6 +59,28 @@ def view_box_in_data(viewer: Viewer, layer: Points) -> tuple[np.ndarray, np.ndar
     return c.min(axis=0), c.max(axis=0)
 
 
+def color_points(values: pd.Series, cmap: str = "viridis") -> np.ndarray:
+    """RGBA colors of the points from one column, independent of which points are loaded.
+
+    Categorical: the palette of napari-spatialdata (``tab20`` sampled over all the categories), indexed by the code
+    of each point in the global category list, so a category keeps its color at every reload. Numeric: ``cmap`` over
+    the values of the loaded points.
+    """
+    import matplotlib.pyplot as plt
+
+    if isinstance(values.dtype, pd.CategoricalDtype):
+        n = max(len(values.cat.categories), 1)
+        palette = plt.get_cmap("tab20")(np.linspace(0, 1, n))
+        codes = values.cat.codes.to_numpy()
+        out = palette[np.clip(codes, 0, n - 1)]
+        out[codes < 0] = (0.5, 0.5, 0.5, 1.0)
+        return out
+    v = pd.to_numeric(values, errors="coerce").to_numpy(dtype=np.float64)
+    lo, hi = np.nanmin(v) if len(v) else 0.0, np.nanmax(v) if len(v) else 1.0
+    norm = (v - lo) / (hi - lo) if hi > lo else np.zeros_like(v)
+    return plt.get_cmap(cmap)(np.nan_to_num(norm))
+
+
 class TiledPointsLoader:
     """Keep a napari Points layer filled with the points in view, read through the spatial index.
 
@@ -176,6 +198,10 @@ class TiledPointsLoader:
         layer.metadata["_tiled_last_query"] = dict(self.last_query)
         # the colors belong to the points just replaced: compute them again for the new points (the coloring chosen
         # in the widgets), or reset them, instead of letting napari keep the old colors by position
+        color_by = layer.metadata.get("_tiled_color_by")
+        if color_by is not None and len(df) and color_by in df.columns:
+            layer.face_color = color_points(df[color_by], layer.metadata.get("_tiled_cmap", "viridis"))
+            return
         recolor = layer.metadata.get("_tiled_recolor")
         if callable(recolor) and len(df):
             try:
@@ -299,6 +325,17 @@ def _polygons_yx(gdf: Any) -> tuple[list[np.ndarray], np.ndarray]:
             out.append(xy[:, ::-1])
             owner.append(i)
     return out, np.asarray(owner, dtype=np.int64)
+
+
+def warn_if_slow_triangulation() -> None:
+    """Warn when napari triangulates the polygons without bermuda (about 30 times slower for thousands of cells)."""
+    import importlib.util
+
+    if importlib.util.find_spec("bermuda") is None:
+        logger.warning(
+            "bermuda is not installed: drawing the cells in view is slow (seconds for a few thousand cells). "
+            "Install it with `pip install bermuda` (or `napari-spatialdata[bermuda]`)."
+        )
 
 
 class TiledShapesLoader:

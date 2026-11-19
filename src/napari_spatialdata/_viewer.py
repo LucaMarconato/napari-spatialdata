@@ -27,6 +27,7 @@ from napari_spatialdata._tiled_points import (
     TiledShapesLoader,
     get_points_spatial_index,
     get_shapes_spatial_index,
+    warn_if_slow_triangulation,
 )
 from napari_spatialdata.constants import config
 from napari_spatialdata.utils._utils import (
@@ -843,6 +844,7 @@ class SpatialDataViewer(QObject):
             table_names = sorted(get_element_annotators(sdata, original_name))
         else:
             adata, table_name, table_names = self._get_table_data(sdata, original_name)
+        warn_if_slow_triangulation()
         loader = TiledShapesLoader(index, max_shapes=config.TILED_SHAPES_MAX)
         gdf = loader.load()
         layer = Shapes(

@@ -179,7 +179,7 @@ def test_tiled_points_colors_follow_reloads(qtbot, make_napari_viewer, sdata_til
     viewer.layers.selection.active = layer
     view_widget._select_layer()
     view_widget.dataframe_columns_widget._onAction(["gene"])
-    assert callable(layer.metadata.get("_tiled_recolor"))
+    assert layer.metadata.get("_tiled_color_by") == "gene"
 
     def colors_match() -> bool:
         genes = layer.metadata["_columns_df"]["gene"].astype(str).to_numpy()
@@ -219,6 +219,10 @@ def test_tiled_points_zoom_in_out_keeps_colors(qtbot, make_napari_viewer, sdata_
     viewer.camera.zoom = 20.0
     qtbot.waitUntil(lambda: layer.metadata["_tiled_last_query"]["budget"] == 1.0, timeout=5_000)
     view_widget.dataframe_columns_widget._onAction(["gene"])
+    # another layer selected while zooming: the coloring must not depend on the selected layer
+    other = viewer.add_points(np.zeros((1, 2)), name="other")
+    viewer.layers.selection.active = other
+    view_widget._select_layer()
     white = np.array([1.0, 1.0, 1.0, 1.0])
     for zoom in [0.3, 20.0, 0.5, 5.0, 0.3, 30.0, 0.3] * 3:
         viewer.camera.zoom = zoom
@@ -226,5 +230,5 @@ def test_tiled_points_zoom_in_out_keeps_colors(qtbot, make_napari_viewer, sdata_
     qtbot.wait(800)
     fc = np.asarray(layer.face_color)
     assert len(fc) == len(layer.data)
-    assert not np.all(np.isclose(fc, white).all(axis=1))  # not all white
+    assert not np.isclose(fc, white).all(axis=1).any()  # no white point
     layer.refresh()  # slicing the layer works (no IndexError)
