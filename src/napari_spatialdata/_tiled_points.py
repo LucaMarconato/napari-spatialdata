@@ -90,9 +90,15 @@ class TiledPointsLoader:
     def _index_box(self, lo: np.ndarray | None, hi: np.ndarray | None) -> tuple[Any, Any]:
         if lo is None or hi is None:
             return None, None
-        ax = list(self.index.metadata.axes)
+        # the box in the order of the axes of the index; axes not shown (e.g. z of a 2-D view) span the whole grid
+        md = self.index.metadata
+        lv0 = md.levels[0]
+        full_lo = np.asarray(lv0.origin, dtype=np.float64)
+        full_hi = full_lo + np.asarray(lv0.tile_size) * np.asarray(lv0.grid_shape)
         pos = {a: i for i, a in enumerate(self.layer_axes)}
-        return np.array([lo[pos[a]] for a in ax]), np.array([hi[pos[a]] for a in ax])
+        bmin = np.array([lo[pos[a]] if a in pos else full_lo[i] for i, a in enumerate(md.axes)])
+        bmax = np.array([hi[pos[a]] if a in pos else full_hi[i] for i, a in enumerate(md.axes)])
+        return bmin, bmax
 
     def count(self, lo: np.ndarray | None = None, hi: np.ndarray | None = None) -> int:
         bmin, bmax = self._index_box(lo, hi)

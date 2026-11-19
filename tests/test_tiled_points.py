@@ -24,7 +24,8 @@ def sdata_tiled(tmp_path, request) -> SpatialData:
     n = 50_000
     xy = rng.uniform(0, 1000, size=(n, 2))
     genes = rng.choice(["a", "b", "c", "rare"], size=n, p=[0.5, 0.3, 0.199, 0.001])
-    df = pd.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "gene": pd.Categorical(genes)})
+    # 3-D points: the grid has all the axes (a single tile along z), the view is 2-D
+    df = pd.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "z": rng.uniform(0, 10, n), "gene": pd.Categorical(genes)})
     points = PointsModel.parse(df, feature_key="gene", npartitions=2)
     path = tmp_path / "data.zarr"
     SpatialData(points={"transcripts": points}).write(path)

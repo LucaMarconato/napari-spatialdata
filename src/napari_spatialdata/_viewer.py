@@ -830,7 +830,14 @@ class SpatialDataViewer(QObject):
         self, sdata: SpatialData, key: str, original_name: str, selected_cs: str, index: Any, affine: Any
     ) -> Shapes:
         """A shapes layer that loads only the shapes in view, through the spatial index of the element (RFC 4)."""
-        adata, table_name, table_names = self._get_table_data(sdata, original_name)
+        table_name = index.metadata.table
+        if table_name is not None and table_name in sdata.tables:
+            # RFC 4: the rows of the table are in the order of the shapes, so no join (a join copies the whole table,
+            # with its layers: ~20 s for 400k cells)
+            adata = sdata.tables[table_name]
+            table_names = sorted(get_element_annotators(sdata, original_name))
+        else:
+            adata, table_name, table_names = self._get_table_data(sdata, original_name)
         loader = TiledShapesLoader(index, max_shapes=config.TILED_SHAPES_MAX)
         gdf = loader.load()
         layer = Shapes(
