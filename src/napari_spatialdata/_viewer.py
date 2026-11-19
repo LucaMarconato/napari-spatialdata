@@ -625,14 +625,11 @@ class SpatialDataViewer(QObject):
         if shapes_index is not None and not include_z:
             return self._get_tiled_sdata_shapes(sdata, key, original_name, selected_cs, shapes_index, affine)
 
-        # when mulitpolygons are present, we select the largest ones
+        # multipolygons: one napari polygon per part, all with the index of their shape, so that the values of the
+        # table (merged on the indices) color every part (GeoArrow stores mixed Polygon/MultiPolygon columns as
+        # MultiPolygon, so most shapes may be single-part MultiPolygons)
         if "MultiPolygon" in np.unique(df.geometry.type):
-            logger.info("Multipolygons are present in the data. Only the largest polygon per cell is retained.")
             df = df.explode(index_parts=False)
-            df["area"] = df.area
-            df = df.sort_values(by="area", ascending=False)  # sort by area
-            df = df[~df.index.duplicated(keep="first")]  # only keep the largest area
-            df = df.sort_index()  # reset the index to the first order
 
         simplify = len(df) > config.POLYGON_THRESHOLD
         polygons, indices = _get_polygons_properties(df, simplify, include_z=include_z)

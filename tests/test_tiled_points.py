@@ -115,7 +115,7 @@ def sdata_tiled_cells(tmp_path) -> SpatialData:
     path = tmp_path / "cells.zarr"
     SpatialData(shapes={"cells": shapes}, tables={"table": table}).write(path)
     sdata = read_zarr(path)
-    build_shapes_spatial_index(sdata, "cells", table_name="table", target_shapes_per_tile=100)
+    build_shapes_spatial_index(sdata, "cells", table_name="table")
     return read_zarr(path)
 
 
@@ -140,3 +140,23 @@ def test_tiled_shapes_layer(qtbot, make_napari_viewer, sdata_tiled_cells, monkey
     assert 0 < len(layer.data) <= 500
     loader.color_by_gene("g1")
     assert layer.face_color.shape == (len(layer.data), 4)
+
+
+def test_multipolygon_parts_are_all_drawn(qtbot, make_napari_viewer):
+    import geopandas as gpd
+    import shapely
+    from spatialdata.models import ShapesModel
+
+    two_parts = shapely.MultiPolygon([shapely.box(0, 0, 10, 10), shapely.box(20, 0, 22, 2)])
+    one_part = shapely.box(40, 40, 50, 50)
+    shapes = ShapesModel.parse(gpd.GeoDataFrame(geometry=[two_parts, one_part], index=pd.Index([7, 9])))
+    sdata = SpatialData(shapes={"cells": shapes})
+    viewer = make_napari_viewer()
+    widget = SdataWidget(viewer, EventedList([sdata]))
+    center_pos = get_center_pos_listitem(widget.coordinate_system_widget, "global")
+    click_list_widget_item(qtbot, widget.coordinate_system_widget, center_pos, "currentItemChanged")
+    widget._onClick("cells")
+    layer = viewer.layers["cells"]
+    # three napari polygons, the two parts of shape 7 with its index
+    assert len(layer.data) == 3
+    assert sorted(layer.metadata["indices"]) == [7, 7, 9]

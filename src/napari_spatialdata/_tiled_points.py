@@ -201,15 +201,16 @@ def get_shapes_spatial_index(sdata: SpatialData, name: str) -> Any:
     return ShapesSpatialIndex(path, Path(sdata.path) / "tables" / table if table else None)
 
 
-def _polygons_yx(gdf: Any) -> list[np.ndarray]:
-    """Exterior of each shape (the largest part of a multipolygon), as (y, x) vertices."""
-    out = []
-    for g in gdf.geometry:
-        if g.geom_type == "MultiPolygon":
-            g = max(g.geoms, key=lambda p: p.area)
-        xy = np.asarray(g.exterior.coords)[:-1]
-        out.append(xy[:, ::-1])
-    return out
+def _polygons_yx(gdf: Any) -> tuple[list[np.ndarray], np.ndarray]:
+    """Exterior of every part of every shape, as (y, x) vertices, and the position of its shape in ``gdf``."""
+    out, owner = [], []
+    for i, g in enumerate(gdf.geometry):
+        parts = g.geoms if g.geom_type == "MultiPolygon" else [g]
+        for part in parts:
+            xy = np.asarray(part.exterior.coords)[:-1]
+            out.append(xy[:, ::-1])
+            owner.append(i)
+    return out, np.asarray(owner, dtype=np.int64)
 
 
 class TiledShapesLoader:
@@ -246,13 +247,15 @@ class TiledShapesLoader:
 
     def update_layer(self, layer: Any, gdf: Any) -> None:
         # not a user edit: do not let the edit caches of napari-spatialdata record it
+        polygons, owner = _polygons_yx(gdf) if len(gdf) else ([], np.empty(0, dtype=np.int64))
         with layer.events.data.blocker():
             layer.data = []
-            if len(gdf):
-                layer.add_polygons(_polygons_yx(gdf))
-        rows = gdf["__row__"].to_numpy() if len(gdf) else np.empty(0, dtype=np.int64)
-        layer.metadata["_n_indices"] = len(gdf)
-        layer.metadata["indices"] = list(gdf.index) if len(gdf) else []
+            if polygons:
+                layer.add_polygons(polygons)
+        # one napari polygon per part; each part carries the index and the row of its shape
+        rows = gdf["__row__"].to_numpy()[owner] if len(gdf) else np.empty(0, dtype=np.int64)
+        layer.metadata["_n_indices"] = len(polygons)
+        layer.metadata["indices"] = list(np.asarray(gdf.index)[owner]) if len(gdf) else []
         layer.metadata["_tiled_rows"] = rows
         layer.metadata["_tiled_last_query"] = dict(self.last_query)
         if self.gene is not None and len(rows):
