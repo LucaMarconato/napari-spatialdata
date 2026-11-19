@@ -142,8 +142,20 @@ class TiledPointsLoader:
         other = df.drop(columns=[c for c in ("x", "y") if c in df.columns])
         layer.metadata["_columns_df"] = other if other.shape[1] else None
         layer.metadata["_tiled_last_query"] = dict(self.last_query)
+        # the colors belong to the points just replaced: compute them again for the new points (the coloring chosen
+        # in the widgets), or reset them, instead of letting napari keep the old colors by position
+        recolor = layer.metadata.get("_tiled_recolor")
+        if callable(recolor) and len(df):
+            try:
+                recolor()
+                return
+            except Exception as e:  # noqa: BLE001 - keep the viewer alive
+                logger.error(f"Coloring the tiled points failed: {e}")
+        if len(df):
+            layer.face_color = layer.current_face_color
 
     def refresh(self) -> None:
+        """Load the points in view now (synchronously)."""
         if self._viewer is None or self._layer is None:
             return
         lo, hi = view_box_in_data(self._viewer, self._layer)
@@ -154,20 +166,58 @@ class TiledPointsLoader:
             return
         self.update_layer(self._layer, df)
 
-    def connect(self, viewer: Viewer, layer: Points, delay_ms: int = 150) -> None:
-        """Reload the points in view after the camera moves (debounced)."""
+    def _refresh_async(self) -> None:
+        """Load the points in view in a worker thread, then update the layer; at most one load at a time."""
+        if self._viewer is None or self._layer is None:
+            return
+        if self._busy:
+            self._pending = True
+            return
+        from napari.qt.threading import create_worker
+
+        lo, hi = view_box_in_data(self._viewer, self._layer)
+        self._busy = True
+        self._pending = False
+        worker = create_worker(self.load, lo, hi)
+
+        def done(df: pd.DataFrame) -> None:
+            if self._layer is not None:
+                self.update_layer(self._layer, df)
+
+        def finished() -> None:
+            self._busy = False
+            if self._pending:
+                self._refresh_async()
+
+        worker.returned.connect(done)
+        worker.errored.connect(lambda e: logger.error(f"Loading tiled points failed: {e}"))
+        worker.finished.connect(finished)
+        worker.start()
+        self._worker = worker
+
+    def connect(self, viewer: Viewer, layer: Points, interval_ms: int = 60) -> None:
+        """Reload the points in view while the camera moves.
+
+        The reloads are throttled (at most one every ``interval_ms``, and one at a time, in a worker thread), not
+        debounced: the points follow the zoom and the pan continuously. With the budget ``b = max_points / count``,
+        a small change of the view changes ``b`` a little: the points with p below the old budget stay, and only the
+        ones between the two budgets appear or disappear (RFC 3, "Reading with a budget").
+        """
         from qtpy.QtCore import QTimer
 
         self._viewer = viewer
         self._layer = layer
+        self._busy = False
+        self._pending = False
         self._timer = QTimer()
         self._timer.setSingleShot(True)
-        self._timer.setInterval(delay_ms)
-        self._timer.timeout.connect(self.refresh)
+        self._timer.setInterval(interval_ms)
+        self._timer.timeout.connect(self._refresh_async)
 
         def schedule(*_: Any) -> None:
             if self._layer is not None and self._layer in viewer.layers and self._layer.visible:
-                self._timer.start()
+                if not self._timer.isActive():  # throttle: keep the scheduled reload, do not postpone it
+                    self._timer.start()
 
         viewer.camera.events.center.connect(schedule)
         viewer.camera.events.zoom.connect(schedule)
@@ -293,7 +343,7 @@ class TiledShapesLoader:
             return
         self.update_layer(self._layer, gdf)
 
-    def connect(self, viewer: Viewer, layer: Any, delay_ms: int = 150) -> None:
+    def connect(self, viewer: Viewer, layer: Any, delay_ms: int = 100) -> None:
         from qtpy.QtCore import QTimer
 
         self._viewer = viewer
@@ -305,7 +355,8 @@ class TiledShapesLoader:
 
         def schedule(*_: Any) -> None:
             if self._layer is not None and self._layer in viewer.layers and self._layer.visible:
-                self._timer.start()
+                if not self._timer.isActive():  # throttle, as for the points
+                    self._timer.start()
 
         viewer.camera.events.center.connect(schedule)
         viewer.camera.events.zoom.connect(schedule)

@@ -154,6 +154,9 @@ class AListWidget(ListWidget):
 
                     properties = self._get_points_properties(vec, key=item, layer=self.model.layer)
                     self.model.color_by = "" if self.model.system_name is None else item
+                    if "_tiled_loader" in self.model.layer.metadata:
+                        # a layer loaded by view (spatial index): color the points loaded later in the same way
+                        self.model.layer.metadata["_tiled_recolor"] = self._tiled_recolor(item, self.model.layer)
                     if isinstance(self.model.layer, Points | Shapes):
                         self.model.layer.text = None  # needed because of the text-feature order of updates
                         self.model.layer.face_color = properties["face_color"]
@@ -174,6 +177,13 @@ class AListWidget(ListWidget):
                     #  done
                     # TODO(giovp): make layer editable?
                     # self.viewer.layers[layer_name].editable = False
+
+    def _tiled_recolor(self, item: str, layer: Any) -> Callable[[], None]:
+        def recolor() -> None:
+            if self.model.layer is layer:
+                self._onAction([item])
+
+        return recolor
 
     def setAdataLayer(self, layer: str | None) -> None:
         if layer in ("default", "None", "X"):

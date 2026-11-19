@@ -161,3 +161,40 @@ def test_multipolygon_parts_are_all_drawn(qtbot, make_napari_viewer):
     # three napari polygons, the two parts of shape 7 with its index
     assert len(layer.data) == 3
     assert sorted(layer.metadata["indices"]) == [7, 7, 9]
+
+
+def test_tiled_points_colors_follow_reloads(qtbot, make_napari_viewer, sdata_tiled, monkeypatch):
+    """After a reload, the points are colored by the chosen column again (not left with the old colors)."""
+    from napari_spatialdata._view import QtAdataViewWidget
+
+    monkeypatch.setattr(config, "POINT_THRESHOLD", 5_000)
+    viewer = make_napari_viewer()
+    widget = SdataWidget(viewer, EventedList([sdata_tiled]))
+    viewer.window.add_dock_widget(widget, name="SpatialData")
+    view_widget = QtAdataViewWidget(viewer)
+    center_pos = get_center_pos_listitem(widget.coordinate_system_widget, "global")
+    click_list_widget_item(qtbot, widget.coordinate_system_widget, center_pos, "currentItemChanged")
+    widget._onClick("transcripts")
+    layer = viewer.layers["transcripts"]
+    viewer.layers.selection.active = layer
+    view_widget._select_layer()
+    view_widget.dataframe_columns_widget._onAction(["gene"])
+    assert callable(layer.metadata.get("_tiled_recolor"))
+
+    def colors_match() -> bool:
+        genes = layer.metadata["_columns_df"]["gene"].astype(str).to_numpy()
+        fc = np.asarray(layer.face_color)
+        if len(fc) != len(genes) or len(genes) == 0:
+            return False
+        # one color per gene, the same for every point of that gene
+        by_gene: dict[str, tuple] = {}
+        for g, c in zip(genes, map(tuple, np.round(fc, 4)), strict=True):
+            if by_gene.setdefault(g, c) != c:
+                return False
+        return True
+
+    assert colors_match()
+    viewer.camera.center = (150.0, 150.0)
+    viewer.camera.zoom = 20.0
+    qtbot.waitUntil(lambda: layer.metadata["_tiled_last_query"]["budget"] == 1.0, timeout=5_000)
+    qtbot.waitUntil(colors_match, timeout=5_000)
